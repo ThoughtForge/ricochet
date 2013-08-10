@@ -6,10 +6,14 @@ import java.util.concurrent.TimeUnit;
 import net.thoughtforge.commons.logging.Log;
 import net.thoughtforge.commons.logging.LogLevel;
 import net.thoughtforge.ricochet.message.AbstractMessage;
+import net.thoughtforge.ricochet.message.AskForNodeRef;
 import net.thoughtforge.ricochet.message.AskForPredecessor;
 import net.thoughtforge.ricochet.message.AskForSuccessor;
+import net.thoughtforge.ricochet.message.AskForSuccessorList;
+import net.thoughtforge.ricochet.message.CheckPredecessor;
 import net.thoughtforge.ricochet.message.Notify;
 import net.thoughtforge.ricochet.message.Stabilise;
+import net.thoughtforge.ricochet.message.StabiliseSuccessorList;
 import net.thoughtforge.ricochet.token.Token;
 import net.thoughtforge.ricochet.token.TokenFactory;
 
@@ -24,6 +28,7 @@ import akka.actor.Cancellable;
 import akka.actor.Scheduler;
 import akka.actor.UntypedActor;
 import akka.dispatch.Futures;
+import akka.dispatch.OnFailure;
 import akka.dispatch.OnSuccess;
 import akka.pattern.Patterns;
 import akka.util.Timeout;
@@ -36,13 +41,19 @@ public class Node extends UntypedActor {
 	
 	private static final FiniteDuration SCHEDULER_INTERVAL = Duration.create(1, TimeUnit.SECONDS);
 	
+	private static final int SUCCESSOR_LIST_SIZE = 2;
+	
 	private NodeRef ref;
 	
 	private NodeRef predecessorRef;
 	
-	private NodeRef successorRef;
+//	private NodeRef successorRef;
+	
+	private NodeRef[] successorList;
 	
 	private Cancellable stabiliseJob;
+	
+	private Cancellable stabiliseSuccessorListJob;
 	
 	/**
 	 * n.create()
@@ -54,7 +65,10 @@ public class Node extends UntypedActor {
 		ref = new NodeRef(getSelf(), new TokenFactory().createToken(id));
 		
 		predecessorRef = null;
-		successorRef = ref;
+		
+		
+		successorList = new NodeRef[SUCCESSOR_LIST_SIZE];
+		successorList[0] = ref;
 		
 		Scheduler scheduler = getContext().system().scheduler();
 		stabiliseJob = scheduler.schedule(
@@ -62,6 +76,23 @@ public class Node extends UntypedActor {
 				SCHEDULER_INTERVAL,
 				ref.getActorRef(),
 				new Stabilise(),
+				getContext().system().dispatcher(),
+				ActorRef.noSender());
+
+		scheduler = getContext().system().scheduler();
+		stabiliseJob = scheduler.schedule(
+				SCHEDULER_INITIAL_DELAY,
+				SCHEDULER_INTERVAL,
+				ref.getActorRef(),
+				new StabiliseSuccessorList(),
+				getContext().system().dispatcher(),
+				ActorRef.noSender());
+		
+		stabiliseSuccessorListJob = scheduler.schedule(
+				SCHEDULER_INITIAL_DELAY,
+				SCHEDULER_INTERVAL,
+				ref.getActorRef(),
+				new CheckPredecessor(),
 				getContext().system().dispatcher(),
 				ActorRef.noSender());
 	}
@@ -82,14 +113,16 @@ public class Node extends UntypedActor {
 		return ref;
 	}
 	
+	@Log(logLevel=LogLevel.DEBUG, logParameters=true)
 	public NodeRef getPredecessorRef() {
 		
 		return predecessorRef;
 	}
 	
+	@Log(logLevel=LogLevel.DEBUG, logParameters=true)
 	public NodeRef getSuccessorRef() {
 		
-		return successorRef;
+		return successorList[0];
 	}
 	
 	@Log(logLevel=LogLevel.DEBUG)
@@ -131,9 +164,33 @@ public class Node extends UntypedActor {
 	}
 	
 	@Log(logLevel=LogLevel.DEBUG, logParameters=true)
+	public void handleMessage(AskForNodeRef askForNodeRef) throws Exception {
+		
+		getSender().tell(ref, ref.getActorRef());
+	}
+
+	@Log(logLevel=LogLevel.DEBUG, logParameters=true)
+	public void handleMessage(AskForSuccessorList askForSuccessorList) throws Exception {
+		
+		getSender().tell(successorList, ref.getActorRef());
+	}
+	
+	@Log(logLevel=LogLevel.DEBUG, logParameters=true)
 	public void handleMessage(Stabilise stabilise) throws Exception {
 		
 		stabilise();
+	}
+
+	@Log(logLevel=LogLevel.DEBUG, logParameters=true)
+	public void handleMessage(StabiliseSuccessorList stabilisesuccessorList) throws Exception {
+		
+		stabiliseSuccessorList();
+	}
+	
+	@Log(logLevel=LogLevel.DEBUG, logParameters=true)
+	public void handleMessage(CheckPredecessor checkPredecessor) throws Exception {
+		
+		checkPredecessor();
 	}
 	
 	/**
@@ -166,7 +223,7 @@ public class Node extends UntypedActor {
 			@Override
 			public NodeRef call() throws Exception {
 				
-				Future<Object> askForPredecessor = Patterns.ask(successorRef.getActorRef(), new AskForPredecessor(), ASK_TIMEOUT);
+				Future<Object> askForPredecessor = Patterns.ask(successorList[0].getActorRef(), new AskForPredecessor(), ASK_TIMEOUT);
 				
 				return (NodeRef) Await.result(askForPredecessor, ASK_TIMEOUT.duration());
 			}
@@ -176,19 +233,100 @@ public class Node extends UntypedActor {
 		askForPredecessor.onSuccess(new OnSuccess<NodeRef>() {
 
 			@Override
+			@Log(logLevel=LogLevel.DEBUG, logParameters=true)
 			public final void onSuccess(NodeRef nodeRef) {
-				if (!nodeRef.isEmpty() && nodeRef.getToken().isBetween(ref.getToken(), successorRef.getToken())) {
-					successorRef = nodeRef;
+				if (!nodeRef.isEmpty() && nodeRef.getToken().isBetween(ref.getToken(), successorList[0].getToken())) {
+					successorList[0] = nodeRef;
+				}
+			}
+			
+		}, getContext().system().dispatcher());
+		
+		successorList[0].getActorRef().tell(new Notify(ref), ref.getActorRef());
+	}
+	
+	/**
+	 * 
+	 */
+	@Log(logLevel=LogLevel.DEBUG)
+	public void stabiliseSuccessorList() {
+		
+		final Future<NodeRef[]> askForSuccessorList = Futures.future(new Callable<NodeRef[]>() {
+
+			@Override
+			public NodeRef[] call() throws Exception {
+				
+				Future<Object> askForSuccessorList = Patterns.ask(successorList[0].getActorRef(), new AskForSuccessorList(), ASK_TIMEOUT);
+				
+				return (NodeRef[]) Await.result(askForSuccessorList, ASK_TIMEOUT.duration());
+			}
+			
+		}, getContext().system().dispatcher());
+				
+		askForSuccessorList.onSuccess(new OnSuccess<NodeRef[]>() {
+
+			@Override
+			@Log(logLevel=LogLevel.DEBUG, logParameters=true)
+			public final void onSuccess(NodeRef[] successorListReceived) {
+				
+				for (int i = 1; i < SUCCESSOR_LIST_SIZE; i++) {
+					
+					successorList[i] = successorListReceived[i - 1];
+				}
+			}
+			
+		}, getContext().system().dispatcher());
+		
+		askForSuccessorList.onFailure(new OnFailure() {
+
+			@Override
+			@Log(logLevel=LogLevel.DEBUG)
+			public final void onFailure(final Throwable throwable) {
+				
+				for (int i = 1; i < SUCCESSOR_LIST_SIZE; i++) {
+					
+					successorList[i - 1] = successorList[i];
 				}
 				
-				successorRef.getActorRef().tell(new Notify(ref), ref.getActorRef());
+				successorList[SUCCESSOR_LIST_SIZE - 1] = ref;
 			}
 			
 		}, getContext().system().dispatcher());
 	}
 	
-	public void stabiliseSuccessorList() {
+	/**
+	 * n.check_predecessor()
+	 *   if (predecessor has failed)
+	 *     predecessor = nil;
+	 */
+	@Log(logLevel=LogLevel.DEBUG)
+	public void checkPredecessor() {
 		
+		if (predecessorRef == null)
+			return;
+					
+		final Future<NodeRef> askForSuccessor = Futures.future(new Callable<NodeRef>() {
+
+			@Override
+			public NodeRef call() throws Exception {
+				
+				Future<Object> askForNodeRef = Patterns.ask(predecessorRef.getActorRef(), new AskForNodeRef(), ASK_TIMEOUT);
+				
+				return (NodeRef) Await.result(askForNodeRef, ASK_TIMEOUT.duration());
+			}
+			
+		}, getContext().system().dispatcher());
+				
+		askForSuccessor.onFailure(new OnFailure() {
+
+			@Override
+			@Log(logLevel=LogLevel.DEBUG)
+			public final void onFailure(final Throwable throwable) {
+				
+				predecessorRef = null;
+			}
+			
+		}, getContext().system().dispatcher());
 	}
 	
 	/**
@@ -202,13 +340,15 @@ public class Node extends UntypedActor {
 		predecessorRef = null;
 		
 		final Future<Object> askForSuccessor = Patterns.ask(existingNode, new AskForSuccessor(ref.getToken()), ASK_TIMEOUT);
-		successorRef = (NodeRef) Await.result(askForSuccessor, ASK_TIMEOUT.duration());
+		successorList[0] = (NodeRef) Await.result(askForSuccessor, ASK_TIMEOUT.duration());
 	}
 	
 	@Log(logLevel=LogLevel.DEBUG)
 	public void leave() throws Exception {
 	
 		stabiliseJob.cancel();
+		stabiliseSuccessorListJob.cancel();
+		
 		getContext().stop(getSelf());
 	}
 	
@@ -223,9 +363,9 @@ public class Node extends UntypedActor {
 	@Log(logLevel=LogLevel.DEBUG, logParameters=true)
 	public NodeRef findSuccessor(Token token) throws Exception {
 		
-		if (token.equals(successorRef.getToken()) || token.isBetween(ref.getToken(), successorRef.getToken())) {
+		if (token.equals(successorList[0].getToken()) || token.isBetween(ref.getToken(), successorList[0].getToken())) {
 			
-			return successorRef;
+			return successorList[0];
 		} else {
 			
 			final Future<Object> askForSuccessor = Patterns.ask(predecessorRef.getActorRef(), new AskForSuccessor(token), ASK_TIMEOUT);
@@ -239,7 +379,7 @@ public class Node extends UntypedActor {
 		
 		return new ToStringBuilder(this)
 				.append("ref", ref)
-				.append("successorRef", successorRef)
+				.append("successorList", successorList)
 				.append("predecessorRef", predecessorRef)
 				.toString();
 	}

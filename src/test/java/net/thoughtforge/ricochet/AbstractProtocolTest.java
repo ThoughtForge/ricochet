@@ -66,15 +66,16 @@ public abstract class AbstractProtocolTest {
 	@After
 	public void after() throws Exception {
 
-		nodeA.underlyingActor().leave();
-		
-		nodeB.underlyingActor().leave();
-		
-		nodeC.underlyingActor().leave();
+//		nodeA.underlyingActor().leave();
+//		
+//		nodeB.underlyingActor().leave();
+//		
+//		nodeC.underlyingActor().leave();
 		
 		actorSystem.shutdown();
 	}
 	
+	@Log(logLevel=LogLevel.DEBUG, logParameters=true)
 	protected void assertNodeSuccessorAndPredecessor(final TestActorRef<Node> nodeRef, TestActorRef<Node> successorRef, TestActorRef<Node> predecessorRef) {
 		
 		await().atMost(5, SECONDS).until(
