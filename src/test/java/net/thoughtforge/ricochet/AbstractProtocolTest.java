@@ -21,13 +21,13 @@ import akka.testkit.TestActorRef;
 
 public abstract class AbstractProtocolTest {
 
-	private static final String NODE_A_ID = "http://localhost:8080/network/node/nodeA";
+	public static final String NODE_A_ID = "http://localhost:8080/network/node/nodeA";
 	
-	private static final String NODE_B_ID = "http://localhost:8080/network/node/nodeB";
+	public static final String NODE_B_ID = "http://localhost:8080/network/node/nodeB";
 	
-	private static final String NODE_C_ID = "http://localhost:8080/network/node/nodeC";
+	public static final String NODE_C_ID = "http://localhost:8080/network/node/nodeC";
 	
-	private ActorSystem actorSystem;
+	protected ActorSystem actorSystem;
 	
 	protected TestActorRef<Node> nodeA;
 	

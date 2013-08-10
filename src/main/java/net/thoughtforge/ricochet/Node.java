@@ -47,8 +47,6 @@ public class Node extends UntypedActor {
 	
 	private NodeRef predecessorRef;
 	
-//	private NodeRef successorRef;
-	
 	private NodeRef[] successorList;
 	
 	private Cancellable stabiliseJob;
